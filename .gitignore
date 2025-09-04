@@ -16,3 +16,5 @@
 *.toc
 *.tps
 *.tcp
+documents/**/*.pdf
+documents/**/*.zip
