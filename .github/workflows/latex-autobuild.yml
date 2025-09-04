@@ -1,0 +1,68 @@
+name: Auto-Build & Commit PDFs
+
+on:
+  push:
+    branches: [ ci-test, main ]
+    # WICHTIG: Commits, die NUR PDFs/ZIPs verändern (vom Bot),
+    # triggern den Workflow NICHT erneut -> keine Endlosschleife.
+    paths-ignore:
+      - 'documents/**/*.pdf'
+      - 'documents/**/*.zip'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write  # nötig für Commit & Push
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # damit wir sauber committen/pushen können
+
+      - name: Show repo layout (debug)
+        run: |
+          pwd
+          ls -la
+          echo "--- documents ---"
+          ls -la documents || true
+
+      - name: Install LaTeX toolchain
+        run: |
+          sudo apt-get update
+          # Sicherste Variante: volles TeX Live (schneller geht auch, aber das ist stressfrei)
+          sudo apt-get install -y texlive-full latexmk biber zip make
+
+      - name: Show LaTeX versions (debug)
+        run: |
+          latexmk -v || true
+          pdflatex --version || true
+          biber --version || true
+
+      # Falls dein "makefile" NICHT im Repo-Root liegt, sondern z.B. in ./makefiles/,
+      # setze working-directory entsprechend. Beispiel:
+      # working-directory: makefiles
+      - name: Build all documents
+        working-directory: dev
+        run: make all
+
+      - name: Commit & push updated PDFs/ZIPs
+        run: |
+          git config --global user.name  "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Nur Artefakte hinzufügen
+          git add documents/**/*.pdf documents/**/*.zip 2>/dev/null || true
+
+          # Nur committen, wenn es Änderungen gibt
+          if ! git diff --cached --quiet; then
+            git commit -m "auto: update built PDFs & ZIPs"
+            git push
+          else
+            echo "No changes to commit."
+          fi
