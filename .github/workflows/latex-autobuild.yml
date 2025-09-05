@@ -14,6 +14,7 @@ on:
 
 jobs:
   build:
+    if: ${{ github.actor != 'github-actions[bot]' }}  # <-- verhindert Self-trigger-Loops
     runs-on: ubuntu-latest
 
     permissions:
@@ -61,18 +62,29 @@ jobs:
           git diff --name-only documents/*.zip || true
 
 
-      - name: Commit & push updated PDFs/ZIPs
+      - name: Commit & push all modified files
         run: |
+          set -e
+
+          # Git identity for the bot
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Nur Artefakte hinzufügen
-          git add documents/**/*.pdf documents/**/*.zip 2>/dev/null || true
+          echo "=== Changed files before staging ==="
+          git status --porcelain || true
 
-          # Nur committen, wenn es Änderungen gibt
-          if ! git diff --cached --quiet; then
-            git commit -m "auto: update built PDFs & ZIPs"
-            git push
-          else
+          # Stage EVERYTHING that's modified/added/deleted (repo-weit)
+          git add -A
+
+          # Nothing to commit? exit cleanly.
+          if git diff --cached --quiet; then
             echo "No changes to commit."
+            exit 0
           fi
+
+          # Helpful commit message incl. short SHA of triggering commit
+          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          git commit -m "auto: rebuild PDFs, ZIPs & dev updates (from ${SHORT_SHA})"
+
+          # Push back to the same branch
+          git push
