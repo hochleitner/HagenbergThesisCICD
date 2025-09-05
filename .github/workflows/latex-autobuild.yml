@@ -1,90 +1,67 @@
-name: Auto-Build & Commit PDFs
+name: Automatic Full Rebuild
 
 on:
   push:
     branches: [ ci-test, main ]
-    # WICHTIG: Commits, die NUR PDFs/ZIPs verändern (vom Bot),
-    # triggern den Workflow NICHT erneut -> keine Endlosschleife.
+    # Prevent unnecessary builds when commits only update generated artifacts
     paths-ignore:
       - 'documents/**/*.pdf'
       - 'documents/**/*.zip'
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch:  # Allow manual triggering of the workflow
 
 jobs:
   build:
-    if: ${{ github.actor != 'github-actions[bot]' }}  # <-- verhindert Self-trigger-Loops
+    # Avoid infinite loops by skipping runs triggered by the GitHub Actions bot
+    if: ${{ github.actor != 'github-actions[bot]' }}
+
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write  # nötig für Commit & Push
+      contents: write  # Required to push commits back to the repository
 
     steps:
-      - name: Checkout
+      # Step 1: Checkout repository
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # damit wir sauber committen/pushen können
+          fetch-depth: 0  # Ensure full history for clean commits and pushes
 
-      - name: Show repo layout (debug)
-        run: |
-          pwd
-          ls -la
-          echo "--- documents ---"
-          ls -la documents || true
-
+      # Step 2: Install LaTeX toolchain
       - name: Install LaTeX toolchain
         run: |
           sudo apt-get update
-          # Sicherste Variante: volles TeX Live (schneller geht auch, aber das ist stressfrei)
+          # Install complete TeX Live distribution (includes latexmk, biber, etc.)
+          # This is slower but ensures all packages are available.
           sudo apt-get install -y texlive-full latexmk biber zip make
 
-      - name: Show LaTeX versions (debug)
-        run: |
-          latexmk -v || true
-          pdflatex --version || true
-          biber --version || true
-
-      # Falls dein "makefile" NICHT im Repo-Root liegt, sondern z.B. in ./makefiles/,
-      # setze working-directory entsprechend. Beispiel:
-      # working-directory: makefiles
-      - name: Build all documents
+      # Step 3: Build all documents using the provided Makefile
+      - name: Build all LaTeX documents
         working-directory: dev
         run: make all
-        
-      - name: Check ZIP diffs
-        run: |
-          for z in documents/*.zip; do
-            echo ">>> $z"
-            unzip -l "$z" | head -n 10
-          done
-          git status
-          git diff --name-only documents/*.zip || true
 
-
-      - name: Commit & push all modified files
+      # Step 4: Commit and push all modified files
+      - name: Commit & push changes
         run: |
           set -e
 
-          # Git identity for the bot
+          # Configure Git author information for the bot
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          echo "=== Changed files before staging ==="
-          git status --porcelain || true
-
-          # Stage EVERYTHING that's modified/added/deleted (repo-weit)
+          # Stage all changes (PDFs, ZIPs, dev/ updates, etc.)
           git add -A
 
-          # Nothing to commit? exit cleanly.
+          # Only commit if there are staged changes
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          # Helpful commit message incl. short SHA of triggering commit
+          # Create a commit with reference to the triggering commit
           SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
-          git commit -m "auto: rebuild PDFs, ZIPs & dev updates (from ${SHORT_SHA})"
+          git commit -m "auto: full rebuild (from ${SHORT_SHA})"
 
-          # Push back to the same branch
+          # Push changes back to the current branch
           git push
