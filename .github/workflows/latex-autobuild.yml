@@ -1,67 +1,133 @@
-name: Automatic Full Rebuild
+name: Automatic Full Rebuild (latex-action)
 
 on:
   push:
-    branches: [ ci-test, main ]
-    # Prevent unnecessary builds when commits only update generated artifacts
+    branches: [ ci-test-latex-action, main ]
+    # Skip runs if commits only change generated artifacts
     paths-ignore:
       - 'documents/**/*.pdf'
       - 'documents/**/*.zip'
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # Allow manual triggering of the workflow
+  workflow_dispatch:
 
 jobs:
   build:
-    # Avoid infinite loops by skipping runs triggered by the GitHub Actions bot
+    # Prevent infinite loops (skip runs triggered by the bot's own commit)
     if: ${{ github.actor != 'github-actions[bot]' }}
 
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write  # Required to push commits back to the repository
+      contents: write  # required to push commits back
+
+    env:
+      # Common paths (mirroring your Makefile)
+      DOCSDIR: documents
+      SOURCEDIR: dev/texmf/tex/latex/hagenberg-thesis
+      SOURCEDIRFOREIGN: dev/texmf/tex/latex-foreign
+      BIBTEXDIR: dev/texmf/bibtex/bib
+      CTANDIR: dev/ctan
+      CTANBUNDLE: hagenberg-thesis
+      CTANREADMEFILE: README.md
+      # Release date (yyyy/mm/dd)
+      RELEASEDATE: ${{ github.event.head_commit.timestamp != '' && format('{0,date,yyyy/MM/dd}', fromJSON('"' + github.event.head_commit.timestamp + '"')) || format('{0,date,yyyy/MM/dd}', github.event.repository.pushed_at) }}
 
     steps:
-      # Step 1: Checkout repository
+      # 1) Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Ensure full history for clean commits and pushes
+          fetch-depth: 0
 
-      # Step 2: Install LaTeX toolchain
-      - name: Install LaTeX toolchain
-        run: |
-          sudo apt-get update
-          # Install complete TeX Live distribution (includes latexmk, biber, etc.)
-          # This is slower but ensures all packages are available.
-          sudo apt-get install -y texlive-full latexmk biber zip make
-
-      # Step 3: Build all documents using the provided Makefile
-      - name: Build all LaTeX documents
-        working-directory: dev
-        run: make all
-
-      # Step 4: Commit and push all modified files
-      - name: Commit & push changes
+      # 2) Update release dates in .sty/.cls/.bib like `make setdates`
+      - name: Update release dates in class/style/bib files
+        shell: bash
         run: |
           set -e
+          DATEPATTERN='\[[0-9]\{4\}\/[0-9]\{2\}\/[0-9]\{2\}\]%%AUTO'
+          sed -i "s|$DATEPATTERN|[${RELEASEDATE}]%%AUTO|g" "$SOURCEDIR"/*.sty "$SOURCEDIR"/*.cls "$BIBTEXDIR"/*.bib
 
-          # Configure Git author information for the bot
+      # 3) Prepare example directories (copy .sty/.cls/.bib and optional PDFs)
+      - name: Sync shared class/style/bib files into each document
+        shell: bash
+        run: |
+          set -e
+          for d in "$DOCSDIR"/*/ ; do
+            [ -d "$d" ] || continue
+            rsync -a --ignore-existing "$SOURCEDIR/"        "$d"
+            rsync -a --ignore-existing "$SOURCEDIRFOREIGN/" "$d" || true
+            rsync -a --ignore-existing "$BIBTEXDIR/"        "$d"
+          done
+
+      # 4) Compile all documents with latex-action (cached TeX Live, no Makefile)
+      - name: Compile all documents (latexmk via latex-action)
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: |
+            documents/*/main.tex
+          work_in_root_file_dir: true
+          # Let latex-action cache TeX packages; install a few system tools
+          cache: true
+          extra_system_packages: zip rsync findutils biber
+
+      # 5) Create Overleaf-ready ZIPs in `documents/` (one per example)
+      - name: Create ZIP archives for Overleaf
+        shell: bash
+        run: |
+          set -e
+          cd "$DOCSDIR"
+          for d in */ ; do
+            [ -d "$d" ] || continue
+            zip -r -q "${d%/}.zip" "$d"
+          done
+
+      # 6) Build CTAN bundle (mirrors your `make ctan`)
+      - name: Build CTAN bundle
+        shell: bash
+        run: |
+          set -e
+          LATEX_DIR="$CTANDIR/$CTANBUNDLE/latex"
+          BIBTEX_DIR="$CTANDIR/$CTANBUNDLE/bibtex"
+          DOC_DIR="$CTANDIR/$CTANBUNDLE/doc"
+
+          # Ensure directories exist and are clean
+          mkdir -p "$LATEX_DIR" "$BIBTEX_DIR" "$DOC_DIR"
+          find "$LATEX_DIR"  -maxdepth 1 -type f -name "*.*" -delete || true
+          find "$BIBTEX_DIR" -maxdepth 1 -type f -name "*.*" -delete || true
+          find "$DOC_DIR"    -maxdepth 1 -type f -name "*.*" -delete || true
+
+          # Copy class/style PDFs and .bib files
+          cp -u "$SOURCEDIR"/*.sty "$SOURCEDIR"/*.cls "$SOURCEDIR"/*.pdf "$LATEX_DIR"
+          cp -u "$BIBTEXDIR"/*.bib "$BIBTEX_DIR"
+
+          # Copy manual/tutorial sources and PDFs (as in your Makefile)
+          cp -u "$DOCSDIR/Manual/main.tex"                "$DOC_DIR/${CTANBUNDLE}.tex"
+          cp -u "$DOCSDIR/Manual/main.pdf"                "$DOC_DIR/${CTANBUNDLE}.pdf"
+          cp -u "$DOCSDIR/HgbThesisTutorialEN/main.pdf"   "$DOC_DIR/${CTANBUNDLE}-tutorial-en.pdf"
+          cp -u "$DOCSDIR/HgbThesisTutorialDE/main.pdf"   "$DOC_DIR/${CTANBUNDLE}-tutorial-de.pdf"
+
+          # Update version in CTAN README
+          CTAN_README="$CTANDIR/$CTANBUNDLE/$CTANREADMEFILE"
+          sed -i "s|^### Version:.*$|### Version: ${RELEASEDATE}|" "$CTAN_README"
+
+          # Create ZIP of the entire CTAN bundle
+          ( cd "$CTANDIR" && rm -f "${CTANBUNDLE}.zip" && zip -r -q "${CTANBUNDLE}.zip" "${CTANBUNDLE}" )
+
+      # 7) Commit and push every modified file (documents, dev, CTAN bundle, etc.)
+      - name: Commit & push changes
+        shell: bash
+        run: |
+          set -e
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage all changes (PDFs, ZIPs, dev/ updates, etc.)
           git add -A
-
-          # Only commit if there are staged changes
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          # Create a commit with reference to the triggering commit
           SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
-          git commit -m "auto: full rebuild (from ${SHORT_SHA})"
-
-          # Push changes back to the current branch
+          git commit -m "auto: full rebuild via latex-action (from ${SHORT_SHA})"
           git push
