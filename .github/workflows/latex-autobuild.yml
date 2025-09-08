@@ -22,27 +22,25 @@ jobs:
       contents: write  # Required to push commits back to the repository
 
     env:
-      # Common paths mirroring your Makefile layout
       DOCSDIR: documents
+      MANUALDIR: manual
       SOURCEDIR: dev/texmf/tex/latex/hagenberg-thesis
       SOURCEDIRFOREIGN: dev/texmf/tex/latex-foreign
       BIBTEXDIR: dev/texmf/bibtex/bib
       CTANDIR: dev/ctan
       CTANBUNDLE: hagenberg-thesis
       CTANREADMEFILE: README.md
+      CTANVERSIONTAG: "### Version:"
 
     steps:
-      # 1) Checkout repository (full history for clean pushes)
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2) Set release date (yyyy/mm/dd) as environment variable for later steps
       - name: Set release date
         run: echo "RELEASEDATE=$(date +'%Y/%m/%d')" >> "$GITHUB_ENV"
 
-      # 3) Update release dates in .sty/.cls/.bib (equivalent to `make setdates`)
       - name: Update release dates in class/style/bib files
         shell: bash
         run: |
@@ -50,29 +48,40 @@ jobs:
           DATEPATTERN='\[[0-9]\{4\}\/[0-9]\{2\}\/[0-9]\{2\}\]%%AUTO'
           sed -i "s|$DATEPATTERN|[${RELEASEDATE}]%%AUTO|g" "$SOURCEDIR"/*.sty "$SOURCEDIR"/*.cls "$BIBTEXDIR"/*.bib
 
-      # 4) Copy shared class/style/bib files into each document folder (like your Makefile)
       - name: Sync shared files into document folders
         shell: bash
         run: |
           set -e
           for d in "$DOCSDIR"/*/ ; do
             [ -d "$d" ] || continue
-            rsync -a --ignore-existing "$SOURCEDIR/"        "$d"
-            rsync -a --ignore-existing "$SOURCEDIRFOREIGN/" "$d" || true
-            rsync -a --ignore-existing "$BIBTEXDIR/"        "$d"
+            find "$SOURCEDIR"/        -maxdepth 1 -type f -name "*.sty" -exec cp -u {} "$d" \;
+            find "$SOURCEDIR"/        -maxdepth 1 -type f -name "*.cls" -exec cp -u {} "$d" \;
+            find "$SOURCEDIR"/        -maxdepth 1 -type f -name "*.pdf" -exec cp -u {} "$d" \;
+            if [ -d "$SOURCEDIRFOREIGN" ]; then
+              find "$SOURCEDIRFOREIGN"/ -maxdepth 1 -type f -name "*.sty" -exec cp -u {} "$d" \;
+            fi
+            find "$BIBTEXDIR"/ -maxdepth 1 -type f -name "*.bib" -exec cp -u {} "$d" \;
           done
 
-      # 5) Compile all documents (cached TeX Live, no Makefile needed)
-      - name: Compile all documents with latex-action
+      - name: Sync shared files into manual folder
+        shell: bash
+        run: |
+          set -e
+          find "$SOURCEDIR"/        -maxdepth 1 -type f -name "*.sty" -exec cp -u {} "$MANUALDIR" \;
+          find "$SOURCEDIR"/        -maxdepth 1 -type f -name "*.cls" -exec cp -u {} "$MANUALDIR" \;
+          if [ -d "$SOURCEDIRFOREIGN" ]; then
+            find "$SOURCEDIRFOREIGN"/ -maxdepth 1 -type f -name "*.sty" -exec cp -u {} "$MANUALDIR" \;
+          fi
+
+      - name: Compile all documents (latest TeX Live)
         uses: xu-cheng/latex-action@v3
         with:
           root_file: |
             documents/*/main.tex
+            manual/main.tex
           work_in_root_file_dir: true
-          cache: true
           extra_system_packages: zip rsync findutils biber
 
-      # 6) Create Overleaf-ready ZIP archives (one per document in `documents/`)
       - name: Create ZIP archives for Overleaf
         shell: bash
         run: |
@@ -83,7 +92,17 @@ jobs:
             zip -r -q "${d%/}.zip" "$d"
           done
 
-      # 7) Build CTAN bundle (matches your `make ctan` behavior)
+      - name: Cleanup document folders
+        shell: bash
+        run: |
+          set -e
+          for d in "$DOCSDIR"/*/ ; do
+            [ -d "$d" ] || continue
+            echo "Cleaning $d"
+            # Remove stray files we don’t want to keep
+            find "$d" -maxdepth 1 -type f ! -name "main.tex" ! -name "main.pdf" ! -name "hgbreferences.bib" -delete
+          done
+
       - name: Build CTAN bundle
         shell: bash
         run: |
@@ -91,26 +110,20 @@ jobs:
           LATEX_DIR="$CTANDIR/$CTANBUNDLE/latex"
           BIBTEX_DIR="$CTANDIR/$CTANBUNDLE/bibtex"
           DOC_DIR="$CTANDIR/$CTANBUNDLE/doc"
-
           mkdir -p "$LATEX_DIR" "$BIBTEX_DIR" "$DOC_DIR"
-          find "$LATEX_DIR"  -maxdepth 1 -type f -name "*.*" -delete || true
-          find "$BIBTEX_DIR" -maxdepth 1 -type f -name "*.*" -delete || true
-          find "$DOC_DIR"    -maxdepth 1 -type f -name "*.*" -delete || true
-
+          find "$LATEX_DIR"  -maxdepth 1 -type f -delete || true
+          find "$BIBTEX_DIR" -maxdepth 1 -type f -delete || true
+          find "$DOC_DIR"    -maxdepth 1 -type f -delete || true
           cp -u "$SOURCEDIR"/*.sty "$SOURCEDIR"/*.cls "$SOURCEDIR"/*.pdf "$LATEX_DIR"
-          cp -u "$BIBTEXDIR"/*.bib "$BIBTEX_DIR"
-
-          cp -u "$DOCSDIR/Manual/main.tex"              "$DOC_DIR/${CTANBUNDLE}.tex"
-          cp -u "$DOCSDIR/Manual/main.pdf"              "$DOC_DIR/${CTANBUNDLE}.pdf"
+          cp -u "$BIBTEXDIR"/*.bib "$BIBTEXDIR"
+          cp -u "$MANUALDIR/main.tex"              "$DOC_DIR/${CTANBUNDLE}.tex"
+          cp -u "$MANUALDIR/main.pdf"              "$DOC_DIR/${CTANBUNDLE}.pdf"
           cp -u "$DOCSDIR/HgbThesisTutorialEN/main.pdf" "$DOC_DIR/${CTANBUNDLE}-tutorial-en.pdf"
           cp -u "$DOCSDIR/HgbThesisTutorialDE/main.pdf" "$DOC_DIR/${CTANBUNDLE}-tutorial-de.pdf"
-
           CTAN_README="$CTANDIR/$CTANBUNDLE/$CTANREADMEFILE"
-          sed -i "s|^### Version:.*$|### Version: ${RELEASEDATE}|" "$CTAN_README"
-
+          sed -i "s|^${CTANVERSIONTAG}.*$|${CTANVERSIONTAG} ${RELEASEDATE}|" "$CTAN_README"
           ( cd "$CTANDIR" && rm -f "${CTANBUNDLE}.zip" && zip -r -q "${CTANBUNDLE}.zip" "${CTANBUNDLE}" )
 
-      # 8) Commit and push every modified file (documents, dev, CTAN bundle, etc.)
       - name: Commit & push changes
         shell: bash
         run: |
@@ -125,5 +138,5 @@ jobs:
           fi
 
           SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
-          git commit -m "auto: full rebuild via latex-action (from ${SHORT_SHA})"
+          git commit -m "auto: full rebuild via latex-action (latest TeX Live, from ${SHORT_SHA})"
           git push
