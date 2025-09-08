@@ -2,7 +2,7 @@ name: Automatic Full Rebuild (latex-action)
 
 on:
   push:
-    branches: [ ci-test, main ]
+    branches: [ ci-test-latex-action, main ]
     # Skip runs if commits only change generated artifacts
     paths-ignore:
       - 'documents/**/*.pdf'
