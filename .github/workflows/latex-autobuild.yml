@@ -1,67 +1,61 @@
-name: Automatic Full Rebuild
+name: Automatic Full Rebuild (Makefile in latex-action)
 
 on:
   push:
     branches: [ ci-test, main ]
-    # Prevent unnecessary builds when commits only update generated artifacts
     paths-ignore:
       - 'documents/**/*.pdf'
       - 'documents/**/*.zip'
+      - 'download/*.zip'
   pull_request:
     branches: [ main ]
-  workflow_dispatch:  # Allow manual triggering of the workflow
+  workflow_dispatch:
 
 jobs:
   build:
-    # Avoid infinite loops by skipping runs triggered by the GitHub Actions bot
     if: ${{ github.actor != 'github-actions[bot]' }}
-
     runs-on: ubuntu-latest
 
     permissions:
-      contents: write  # Required to push commits back to the repository
+      contents: write
 
     steps:
-      # Step 1: Checkout repository
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Ensure full history for clean commits and pushes
+          fetch-depth: 0
 
-      # Step 2: Install LaTeX toolchain
-      - name: Install LaTeX toolchain
+      # latex-action needs a root_file;
+      - name: Create dummy LaTeX file
         run: |
-          sudo apt-get update
-          # Install complete TeX Live distribution (includes latexmk, biber, etc.)
-          # This is slower but ensures all packages are available.
-          sudo apt-get install -y texlive-full latexmk biber zip make
+          mkdir -p .github
+          cat > .github/latex-dummy.tex <<'EOF'
+          \documentclass{article}
+          \begin{document}dummy\end{document}
+          EOF
 
-      # Step 3: Build all documents using the provided Makefile
-      - name: Build all LaTeX documents
-        working-directory: dev
-        run: make all
+      - name: Run Makefile inside latest TeX Live (via latex-action)
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: .github/latex-dummy.tex
+          work_in_root_file_dir: false
+          extra_system_packages: make zip rsync findutils biber
+          pre_compile: |
+            set -e
+            make -C dev all
 
-      # Step 4: Commit and push all modified files
       - name: Commit & push changes
         run: |
           set -e
-
-          # Configure Git author information for the bot
           git config --global user.name  "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Stage all changes (PDFs, ZIPs, dev/ updates, etc.)
           git add -A
-
-          # Only commit if there are staged changes
           if git diff --cached --quiet; then
             echo "No changes to commit."
             exit 0
           fi
 
-          # Create a commit with reference to the triggering commit
           SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
-          git commit -m "auto: full rebuild (from ${SHORT_SHA})"
-
-          # Push changes back to the current branch
+          git commit -m "auto: full rebuild (Makefile inside latest TeX Live, from ${SHORT_SHA})"
           git push
